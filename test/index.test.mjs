@@ -25,11 +25,24 @@ test('budget floors and fallbacks', () => {
   assert.equal(resolveBudget(0, 0, DEFAULTS), 2000)
 })
 
-test('token estimate: latin 4 chars/token, CJK 1 char/token', () => {
+test('token estimate depends on the kind of text', () => {
   assert.equal(estimateTokens('abcd'), 1)
   assert.equal(estimateTokens('abcde'), 2)
   assert.equal(estimateTokens('中文'), 2)
   assert.equal(estimateTokens('한국어'), 3)
+  assert.equal(estimateTokens('1234567890'), 10, 'each digit counts')
+  assert.equal(estimateTokens('one two'), 2, 'a single space folds into the next word')
+  assert.equal(estimateTokens('a\n\nb'), 2, 'a run of line breaks costs one')
+  assert.equal(estimateTokens('    x'), 2, 'an indent costs one')
+  assert.equal(estimateTokens('{}'), 2)
+  assert.equal(estimateTokens('Привет'), 3)
+  assert.equal(estimateTokens('🚀'), 3)
+  assert.equal(estimateTokens(''), 0)
+})
+
+test('numbers are not underestimated the way a flat ratio does', () => {
+  const lines = Array.from({ length: 1000 }, (_, i) => String(i + 1)).join('\n')
+  assert.ok(estimateTokens(lines) >= lines.length * 0.9, String(estimateTokens(lines)))
 })
 
 test('content within budget is left alone', () => {

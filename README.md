@@ -23,7 +23,7 @@ budget = max(ratio × (contextWindow − reservedOutput), minTokens)   # capped 
 - `contextWindow` and reserved output are resolved exactly like the official `dsh-compaction-basic`: the session's routed provider/model through `llm.resolveModelInfo`; reserved output is the request's `maxTokens`, else the model default.
 - Text over budget keeps the **first 75 % and last 25 %** (errors usually sit at the end) with a one-line notice telling the model how to see the rest, such as `grep/head/tail` for shell tools.
 - `read` is different: it keeps **complete lines from the start** and names the exact `offset` to continue from. A hole in the middle of a paged file would be skipped silently, so no tail is kept. If not even one line fits, the notice points to `bash` instead of back to the same offset.
-- Token estimate matches the host's 4 chars/token, but CJK counts 1 char/token so Chinese/Japanese/Korean output is not underestimated.
+- The token estimate depends on the kind of text: each digit counts as a token, punctuation and CJK characters count individually, and letters count by word length. A flat 4 chars/token, which the host uses, was off by up to 4× on numbers and hashes. The weights were fitted against the token counts three local models reported, then checked on files that were not part of the fit: 6 % average error, against 25 % for the flat ratio.
 - Images and other non-text blocks pass through. History from before the plugin first saw the session is left alone, so the provider's prompt cache survives.
 - **Only the model's view changes.** The session log keeps the tool's real output, so you can still see it. The write is the pair the host's own tool-result pruner uses: a `compaction/prune` shadow price, then a `tool/result` that replaces the node on the surface. It needs `dsh-token-meter`, which is in the base bundle.
 - Without a declared `contextWindow` (or if the lookup fails) `fallbackTokens` applies.
@@ -96,7 +96,7 @@ Invalid config (unknown key, ratio out of range, non-positive integer, `minToken
 
 ## Known limitations
 
-- Budgets use an estimate, not real tokenization; conservative for code and English, possibly off for rare scripts.
+- Budgets use an estimate, not the model's tokenizer. It was fitted on three local models and may differ on others. It runs high on numbers and hashes for models that group digits, so those results get trimmed sooner than necessary.
 - The model cannot read what was omitted unless spill-policy saved a file. It has to fetch it again, and for shell tools the notice suggests re-running with narrower output, which runs a command with side effects a second time.
 - A small model may ignore the notice. In a test with a local 4B model it skipped the suggested `offset` and used `grep` instead.
 - The defaults are rules of thumb, not the result of a systematic evaluation. Comparison data across models is welcome.

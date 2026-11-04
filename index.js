@@ -46,11 +46,19 @@ export const DEFAULTS = Object.freeze({
   exclude: [],
 })
 
-// CJK, Hangul, full-width forms: roughly one token per character.
+// Token cost by kind of text, fitted against the prompt_tokens that three local
+// models (LM Studio) reported for code, logs, JSON, prose, Chinese, Cyrillic,
+// emoji, numbers and hashes. A flat chars-per-token figure cannot work: digits
+// cost about 1 char/token and English prose about 3.7.
+const CHARS_PER_WORD_TOKEN = 4.5 // ASCII letters
+const CHARS_PER_LETTER_TOKEN = 2.5 // other alphabets, such as Cyrillic
+const COST_DENSE = 0.7 // each CJK, kana, Hangul or full-width character
+const COST_PUNCTUATION = 0.8
+const COST_PICTOGRAPH = 3
 const DENSE = /[⺀-鿿가-힯豈-﫿＀-￯]/
-// Matches the host token meter's density for everything else.
-const CHARS_PER_TOKEN = 4
-const NOTICE_RESERVE = 48
+const LETTER = /\p{L}/u
+const PICTOGRAPH = /\p{Extended_Pictographic}/u
+const NOTICE_RESERVE = 64
 
 /** Fail loud on bad config instead of silently changing behaviour. */
 export function resolveConfig(config = {}) {
@@ -72,23 +80,60 @@ export function resolveConfig(config = {}) {
   return out
 }
 
-/** Estimated tokens: dense scripts 1 char/token, everything else 4 chars/token. */
+/**
+ * A running token estimate. Whitespace depends on the run around it: a single
+ * space folds into the next word, while a line break or an indent costs one.
+ * @returns a function that adds one code point and returns the total so far.
+ */
+function createMeter() {
+  let cost = 0
+  let run = ''
+  let length = 0
+  return (ch) => {
+    const code = ch.codePointAt(0)
+    let kind
+    if (code < 128) {
+      if ((code >= 97 && code <= 122) || (code >= 65 && code <= 90)) kind = 'word'
+      else if (code >= 48 && code <= 57) kind = 'digit'
+      else if (code === 32 || code === 9) kind = 'blank'
+      else if (code === 10 || code === 13) kind = 'break'
+      else kind = 'punctuation'
+    } else if (DENSE.test(ch)) kind = 'dense'
+    else if (LETTER.test(ch)) kind = 'letter'
+    else if (PICTOGRAPH.test(ch)) kind = 'pictograph'
+    else kind = 'punctuation'
+
+    if (kind !== run) {
+      run = kind
+      length = 0
+    }
+    if (kind === 'word') cost += 1 / CHARS_PER_WORD_TOKEN
+    else if (kind === 'digit') cost += 1
+    else if (kind === 'blank') cost += length === 1 ? 1 : 0
+    else if (kind === 'break') cost += length === 0 ? 1 : 0
+    else if (kind === 'dense') cost += COST_DENSE
+    else if (kind === 'letter') cost += 1 / CHARS_PER_LETTER_TOKEN
+    else if (kind === 'pictograph') cost += COST_PICTOGRAPH
+    else cost += COST_PUNCTUATION
+    length++
+    return cost
+  }
+}
+
+/** Estimated tokens for `text`. */
 export function estimateTokens(text) {
-  let dense = 0
-  let other = 0
-  for (const ch of text) DENSE.test(ch) ? dense++ : other++
-  return dense + Math.ceil(other / CHARS_PER_TOKEN)
+  const add = createMeter()
+  let cost = 0
+  for (const ch of text) cost = add(ch)
+  return Math.ceil(cost)
 }
 
 /** Longest prefix of `chars` (code points) within `tokens`. */
 function takeHead(chars, tokens) {
-  let used = 0
-  let other = 0
+  const add = createMeter()
   let i = 0
   for (; i < chars.length; i++) {
-    if (DENSE.test(chars[i])) used++
-    else if (++other % CHARS_PER_TOKEN === 1) used++
-    if (used > tokens) break
+    if (add(chars[i]) > tokens) break
   }
   return chars.slice(0, i).join('')
 }
