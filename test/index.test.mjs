@@ -14,7 +14,9 @@ test('budget scales with the context window', () => {
   assert.equal(resolveBudget(4096, 1024, DEFAULTS), 461)
   assert.equal(resolveBudget(8192, 2048, DEFAULTS), 922)
   assert.equal(resolveBudget(32768, 4096, DEFAULTS), 4301)
-  assert.equal(resolveBudget(131072, 8192, DEFAULTS), 8000)
+  assert.equal(resolveBudget(131072, 8192, DEFAULTS), 18432)
+  assert.equal(resolveBudget(1048576, 8192, DEFAULTS), 156058, 'large windows are not capped by default')
+  assert.equal(resolveBudget(131072, 8192, { ...DEFAULTS, maxTokens: 8000 }), 8000, 'an explicit cap still applies')
 })
 
 test('budget floors and fallbacks', () => {
@@ -37,12 +39,53 @@ test('content within budget is left alone', () => {
 
 test('oversized text keeps head and tail and stays within budget', () => {
   const text = 'L'.repeat(20000) + 'END_MARK'
-  const [out, image] = fitContent([{ type: 'text', text }, { type: 'image', url: 'x' }], 500, 'read')
+  const [out, image] = fitContent([{ type: 'text', text }, { type: 'image', url: 'x' }], 500, 'bash')
   assert.ok(estimateTokens(out.text) <= 520, String(estimateTokens(out.text)))
   assert.ok(out.text.startsWith('LLLL'))
   assert.ok(out.text.endsWith('END_MARK'))
-  assert.match(out.text, /offset\/limit/)
   assert.deepEqual(image, { type: 'image', url: 'x' })
+})
+
+// Same shape as the real dsh-tool-fs read output.
+function readOutput(from, to, next) {
+  const lines = []
+  for (let n = from; n <= to; n++) lines.push(`${n}: line ${String(n).padStart(5, '0')} the quick brown fox jumps over the lazy dog`)
+  return `<path>/w/f.txt</path>\n<type>file</type>\n<content>\n${lines.join('\n')}\n\n(Showing lines ${from}-${to} of 3000. Use offset=${next} to continue.)\n</content>`
+}
+
+test('read: paging from the notice covers every line, with no hole', () => {
+  // Page through lines 1-930 the way a model would: follow each offset the result names.
+  const seen = new Set()
+  let offset = 1
+  for (let page = 0; page < 50 && offset <= 930; page++) {
+    // The last page fits, so fitContent leaves it unchanged (returns undefined).
+    const content = [{ type: 'text', text: readOutput(offset, 930, 931) }]
+    const [out] = fitContent(content, 1000, 'read') ?? content
+    assert.ok(estimateTokens(out.text) <= 1000, String(estimateTokens(out.text)))
+    for (const m of out.text.matchAll(/^(\d+): /gm)) seen.add(Number(m[1]))
+    const next = /offset=(\d+)/.exec(out.text)
+    assert.ok(next, 'names where to continue')
+    assert.ok(Number(next[1]) > offset, 'always makes progress')
+    offset = Number(next[1])
+  }
+  for (let n = 1; n <= 930; n++) assert.ok(seen.has(n), `line ${n} was skipped`)
+})
+
+test('read: keeps only complete lines and no stale footer', () => {
+  const [out] = fitContent([{ type: 'text', text: readOutput(1, 930, 931) }], 1000, 'read')
+  assert.ok(!out.text.includes('offset=931'), 'stale footer must not survive')
+  assert.ok(out.text.endsWith('</content>'))
+  const last = [...out.text.matchAll(/^(\d+): (.*)$/gm)].at(-1)
+  assert.match(last[2], /lazy dog$/)
+  assert.match(out.text, new RegExp(`offset=${Number(last[1]) + 1}\\b`))
+})
+
+test('read: a single line too long for the budget still says what to do', () => {
+  const text = `<path>/w/f</path>\n<type>file</type>\n<content>\n1: ${'x'.repeat(20000)}\n</content>`
+  const [out] = fitContent([{ type: 'text', text }], 400, 'read')
+  assert.ok(estimateTokens(out.text) <= 400, String(estimateTokens(out.text)))
+  assert.match(out.text, /grep/)
+  assert.ok(!/offset=\d/.test(out.text), 'must not send the model back to the same line')
 })
 
 test('CJK output is not underestimated', () => {
@@ -71,7 +114,7 @@ test('multiple text blocks share one budget in order', () => {
 test('config validation fails loud', () => {
   assert.throws(() => resolveConfig({ ratio: 0 }), /ratio/)
   assert.throws(() => resolveConfig({ ratio: 2 }), /ratio/)
-  assert.throws(() => resolveConfig({ minTokens: 9000 }), /exceeds/)
+  assert.throws(() => resolveConfig({ minTokens: 9000, maxTokens: 8000 }), /exceeds/)
   assert.throws(() => resolveConfig({ maxTokens: 1.5 }), /positive integer/)
   assert.throws(() => resolveConfig({ typo: 1 }), /unknown config key/)
   assert.throws(() => resolveConfig({ exclude: 'bash' }), /exclude/)

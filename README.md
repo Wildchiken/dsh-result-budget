@@ -17,11 +17,12 @@ dsh caps tool output with fixed numbers: `read` 2000 lines / 50 KB, bash 16 000 
 On every `tools/post-execute`:
 
 ```
-budget = clamp(ratio × (contextWindow − reservedOutput), minTokens, maxTokens)
+budget = max(ratio × (contextWindow − reservedOutput), minTokens)   # capped by maxTokens if you set one
 ```
 
 - `contextWindow` and reserved output are resolved exactly like the official `dsh-compaction-basic`: the session's routed provider/model through `llm.resolveModelInfo`; reserved output is the request's `maxTokens`, else the model default.
-- Text over budget keeps the **first 75 % and last 25 %** (errors usually sit at the end) with a one-line notice telling the model how to see the rest: `offset/limit` for `read`, `grep/head/tail` for shell tools.
+- Text over budget keeps the **first 75 % and last 25 %** (errors usually sit at the end) with a one-line notice telling the model how to see the rest, such as `grep/head/tail` for shell tools.
+- `read` is different: it keeps **complete lines from the start** and names the exact `offset` to continue from. A hole in the middle of a paged file would be skipped silently, so no tail is kept. If not even one line fits, the notice points to `bash` instead of back to the same offset.
 - Token estimate matches the host's 4 chars/token, but CJK counts 1 char/token so Chinese/Japanese/Korean output is not underestimated.
 - Images and other non-text blocks pass through. Calls blocked by other listeners and structured-value replacements are left alone.
 - Without a declared `contextWindow` (or if the lookup fails) `fallbackTokens` applies.
@@ -33,7 +34,7 @@ With the defaults:
 | 4k (1k) | ≈ 460 tokens |
 | 8k (2k) | ≈ 920 tokens |
 | 32k (4k) | ≈ 4300 tokens |
-| 128k and up | 8000 tokens (cap) |
+| 128k (8k) | ≈ 18 400 tokens (tools' own caps usually apply first) |
 | unknown | 2000 tokens |
 
 ## Install
@@ -79,9 +80,9 @@ export function apply(ctx) {
 |---|---|---|
 | `ratio` | `0.15` | Max share of the usable window one result may take, (0, 1] |
 | `minTokens` | `384` | Budget floor |
-| `maxTokens` | `8000` | Budget ceiling, so large-window models don't get huge results either |
+| `maxTokens` | `null` | Optional budget ceiling; none by default, so large-window models lose nothing |
 | `fallbackTokens` | `2000` | Budget when the window is unknown |
-| `headShare` | `0.75` | Share of the kept text taken from the start; the rest is the tail |
+| `headShare` | `0.75` | Share of the kept text taken from the start; the rest is the tail. Not used for `read` |
 | `exclude` | `[]` | Tool names to skip, `*` wildcards allowed, e.g. `["mcp_*"]` |
 
 Invalid config (unknown key, ratio out of range, non-positive integer, `minTokens > maxTokens`) fails at load time instead of silently falling back.

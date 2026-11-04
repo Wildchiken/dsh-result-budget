@@ -17,11 +17,12 @@ dsh 自带的上限都是固定数字：`read` 一次 2000 行 / 50 KB，bash 16
 每次工具调用结束（`tools/post-execute`）时：
 
 ```
-预算 = clamp(ratio × (contextWindow − 预留输出), minTokens, maxTokens)
+预算 = max(ratio × (contextWindow − 预留输出), minTokens)   # 设了 maxTokens 时不超过它
 ```
 
 - `contextWindow` 和「预留输出」的取法与官方 `dsh-compaction-basic` 一致：从会话实际路由的 provider/model 调 `llm.resolveModelInfo`；预留输出 = 本次请求的 `maxTokens`，没有就用模型默认值。
-- 文本超出预算时保留**开头 75% + 结尾 25%**（报错通常在结尾），中间替换为一句提示，告诉模型怎样看被省略的部分：`read` 提示用 `offset/limit`，shell 类提示用 `grep/head/tail`。
+- 文本超出预算时保留**开头 75% + 结尾 25%**（报错通常在结尾），中间替换为一句提示，告诉模型怎样看被省略的部分，比如 shell 类提示用 `grep/head/tail`。
+- `read` 例外：只从开头保留**完整的行**，并写明接着读的 `offset`。分页读文件时中间留缺口会被悄悄跳过，所以不保留结尾。如果连一行都放不下，提示改用 `bash`，而不是让模型回到同一个 offset。
 - token 估算沿用宿主的 4 字符/token；中日韩字符按 1 字符/token，避免中文输出被低估。
 - 图片等非文本块原样保留；被其他插件 block 的调用、改写成结构化值的结果不动。
 - 模型没声明 `contextWindow` 或查询失败时，使用 `fallbackTokens`。
@@ -33,7 +34,7 @@ dsh 自带的上限都是固定数字：`read` 一次 2000 行 / 50 KB，bash 16
 | 4k（1k） | ≈ 460 token |
 | 8k（2k） | ≈ 920 token |
 | 32k（4k） | ≈ 4300 token |
-| 128k 及以上 | 8000 token（封顶） |
+| 128k（8k） | ≈ 18400 token（通常工具自身的上限会先生效） |
 | 未知 | 2000 token |
 
 ## 安装
@@ -79,9 +80,9 @@ export function apply(ctx) {
 |---|---|---|
 | `ratio` | `0.15` | 单个结果最多占可用窗口的比例，(0, 1] |
 | `minTokens` | `384` | 预算下限 |
-| `maxTokens` | `8000` | 预算上限，大窗口模型不会因此收到超长结果 |
+| `maxTokens` | `null` | 可选的预算上限；默认不设，大窗口模型不会被白白裁剪 |
 | `fallbackTokens` | `2000` | 拿不到窗口时的预算 |
-| `headShare` | `0.75` | 截断时开头所占比例，其余给结尾 |
+| `headShare` | `0.75` | 截断时开头所占比例，其余给结尾；对 `read` 不生效 |
 | `exclude` | `[]` | 不处理的工具名，支持 `*` 通配，如 `["mcp_*"]` |
 
 非法配置（未知键、比例越界、非正整数、`minTokens > maxTokens`）在加载时直接报错，不会悄悄回退到默认值。

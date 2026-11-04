@@ -7,5 +7,4 @@
       config:
         ratio: 0.15
         minTokens: 384
-        maxTokens: 8000
         fallbackTokens: 2000

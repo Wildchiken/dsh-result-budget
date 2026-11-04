@@ -14,8 +14,11 @@
  * using the same model lookup as dsh-compaction-basic (routed request header →
  * `llm.resolveModelInfo`; reserved output = request maxTokens ?? model default).
  * Text over budget keeps its head (75 %) and tail (25 %) with a one-line notice
- * telling the model how to see the rest. Switching models changes the budget
- * automatically; nothing is tuned for a specific model.
+ * telling the model how to see the rest. `read` is the exception: it keeps
+ * complete lines from the start and names the exact offset to continue from,
+ * because a hole in the middle of a paged file would be skipped silently.
+ * Switching models changes the budget automatically; nothing is tuned for a
+ * specific model.
  *
  * Mounted globally it covers every agent; mounted inside an agent preset it
  * covers only that preset's agents (Cordis scope-filtered dispatch).
@@ -27,7 +30,7 @@ export const inject = ['llm']
 export const DEFAULTS = Object.freeze({
   ratio: 0.15,
   minTokens: 384,
-  maxTokens: 8000,
+  maxTokens: null, // no ceiling: a large window has room, and tools keep their own caps
   fallbackTokens: 2000,
   headShare: 0.75,
   exclude: [],
@@ -49,9 +52,10 @@ export function resolveConfig(config = {}) {
   if (!(out.ratio > 0 && out.ratio <= 1)) throw new Error(`dsh-result-budget: ratio must be in (0, 1], got ${out.ratio}`)
   if (!(out.headShare >= 0 && out.headShare <= 1)) throw new Error(`dsh-result-budget: headShare must be in [0, 1], got ${out.headShare}`)
   for (const key of ['minTokens', 'maxTokens', 'fallbackTokens']) {
+    if (key === 'maxTokens' && out[key] === null) continue
     if (!Number.isInteger(out[key]) || out[key] <= 0) throw new Error(`dsh-result-budget: ${key} must be a positive integer, got ${out[key]}`)
   }
-  if (out.minTokens > out.maxTokens) throw new Error(`dsh-result-budget: minTokens (${out.minTokens}) exceeds maxTokens (${out.maxTokens})`)
+  if (out.maxTokens !== null && out.minTokens > out.maxTokens) throw new Error(`dsh-result-budget: minTokens (${out.minTokens}) exceeds maxTokens (${out.maxTokens})`)
   if (!Array.isArray(out.exclude) || out.exclude.some((p) => typeof p !== 'string')) {
     throw new Error('dsh-result-budget: exclude must be a list of tool-name patterns')
   }
@@ -89,11 +93,32 @@ export function resolveBudget(contextWindow, reservedOutput, config = DEFAULTS) 
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return fallbackTokens
   // A request that reserves most of the window still gets a quarter of it as the base.
   const usable = Math.max(contextWindow - (reservedOutput || 0), contextWindow * 0.25)
-  return Math.round(Math.min(maxTokens, Math.max(minTokens, usable * ratio)))
+  return Math.round(Math.min(maxTokens ?? Infinity, Math.max(minTokens, usable * ratio)))
+}
+
+/**
+ * Fit `read` output from the start only, ending on a complete numbered line.
+ * Keeping a tail here would leave a hole that the tool's own "Use offset=N"
+ * footer tells the model to jump over, so the footer goes and the notice names
+ * the line right after the last one kept.
+ */
+function fitRead(text, tokens) {
+  const chars = [...text]
+  const raw = takeHead(chars, tokens)
+  const cut = raw.lastIndexOf('\n')
+  const whole = cut >= 0 ? raw.slice(0, cut) : raw
+  const close = /<\/content>\s*$/.test(text) ? '\n</content>' : ''
+  const last = [...whole.matchAll(/^(\d+): /gm)].at(-1)
+  if (last !== undefined) {
+    const line = Number(last[1])
+    return `${whole}\n\n(Trimmed to fit this model's context window. Showing up to line ${line}. Use offset=${line + 1} to continue.)${close}`
+  }
+  // Not even one whole line fits: pointing back at the same offset would loop forever.
+  const omitted = chars.length - [...raw].length
+  return `${raw}\n\n[... ${omitted} characters omitted: this line is too long for this model's context window. Inspect it with bash (grep, cut) ...]${close}`
 }
 
 function hintFor(toolName) {
-  if (toolName === 'read') return 'Read the omitted part with read using offset/limit.'
   if (/^(bash|pwsh|shell|terminal)/.test(toolName)) {
     return 'Re-run with narrower output (grep, head, tail, wc) instead of printing everything.'
   }
@@ -120,6 +145,10 @@ export function fitContent(content, budget, toolName, headShare = DEFAULTS.headS
     }
     const chars = [...block.text]
     const room = Math.max(remaining - NOTICE_RESERVE, 0)
+    if (toolName === 'read') {
+      remaining = 0
+      return { ...block, text: fitRead(block.text, room) }
+    }
     const head = takeHead(chars, Math.floor(room * headShare))
     const tail = room > 0 ? takeTail(chars, Math.floor(room * (1 - headShare))) : ''
     const omitted = chars.length - [...head].length - [...tail].length
