@@ -1,6 +1,6 @@
 {
   "name": "dsh-result-budget",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "DeepSeek Harness plugin: size every tool result to the active model's context window, so local and small models are not flooded by one oversized output.",
   "type": "module",
   "main": "./index.js",

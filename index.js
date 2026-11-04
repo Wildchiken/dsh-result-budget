@@ -7,7 +7,8 @@
  * conversation is already under pressure, so one oversized result can still
  * fill the window by itself.
  *
- * This plugin listens on `tools/post-execute` and, per call, computes
+ * Before each step this plugin looks at the results that arrived since the last
+ * one and computes, per model,
  *
  *     budget = clamp(ratio × (contextWindow − reservedOutput), minTokens, maxTokens)
  *
@@ -20,12 +21,21 @@
  * Switching models changes the budget automatically; nothing is tuned for a
  * specific model.
  *
+ * Only the model's view changes. The write is the pair the host's own
+ * tool-result pruner uses: a `compaction/prune` shadow price followed by a
+ * `tool/result` that replaces the node on the surface. The session log keeps
+ * the tool's real output. It happens on `agent/pre-step` because a turn is open
+ * there (a replacement outside one leaves a log that cannot be read back) and
+ * because that dispatch is filtered by agent, so a preset-scoped mount stays
+ * inside its preset. The listener is prepended so compaction measures the
+ * reduced surface instead of summarizing weight that was already removed.
+ *
  * Mounted globally it covers every agent; mounted inside an agent preset it
  * covers only that preset's agents (Cordis scope-filtered dispatch).
  */
 
 export const name = 'result-budget'
-export const inject = ['llm']
+export const inject = ['llm', 'tokenMeter']
 
 export const DEFAULTS = Object.freeze({
   ratio: 0.15,
@@ -166,15 +176,46 @@ function matcher(patterns) {
 }
 
 /**
- * Install the post-execute listener on `ctx`. Exported so presets and other
- * plugins can compose it without mounting a separate row.
- * @param ctx - a context that has `llm` available.
+ * Replace one result on the surface, keeping the original in the log.
+ * The two appends must stay adjacent: the token meter reads the shadow price as
+ * a claim on the very next event, and a replacement with no claim would leave
+ * the running total charging for content the request no longer carries.
+ * @returns the seq of the replacement.
+ */
+function replaceOnSurface(session, tokenMeter, seq, event, original, content) {
+  session.append('compaction/prune', {
+    shadowedRange: { start: seq, end: seq },
+    shadowedSeqs: [seq],
+    shadowedTokenCount: tokenMeter.estimateMessage(original),
+  })
+  return session.append(
+    'tool/result',
+    { ...event.data, message: { ...original, content } },
+    { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] },
+  ).seq
+}
+
+/**
+ * Install the listeners on `ctx`. Exported so presets and other plugins can
+ * compose it without mounting a separate row.
+ * @param ctx - a context that has `llm` and `tokenMeter` available.
  * @param config - see {@link DEFAULTS}.
  */
 export function installResultBudget(ctx, config = {}) {
   const options = resolveConfig(config)
   const excluded = matcher(options.exclude)
   const modelInfo = new Map()
+  // session → { watermark: newest seq already looked at, names: callId → tool name }
+  const sessions = new WeakMap()
+
+  const stateOf = (session) => {
+    let state = sessions.get(session)
+    if (state === undefined) {
+      state = { watermark: undefined, names: new Map() }
+      sessions.set(session, state)
+    }
+    return state
+  }
 
   async function budgetFor(agent, signal) {
     const routed = agent?.session?.requestHeader?.()?.config
@@ -195,21 +236,62 @@ export function installResultBudget(ctx, config = {}) {
     return resolveBudget(info?.context?.contextWindow, reserved, options)
   }
 
-  return ctx.on('tools/post-execute', async (exec, result, next) => {
-    const decision = await next()
-    try {
-      // Leave blocked calls and structured-value replacements to whoever made them.
-      if (decision?.kind !== 'accept' || decision.value !== undefined) return decision
-      if (excluded(exec.name)) return decision
-      const content = decision.content ?? result?.content
-      const budget = await budgetFor(exec.agent, exec.signal)
-      const fitted = fitContent(content, budget, exec.name, options.headShare)
-      return fitted === undefined ? decision : { ...decision, content: fitted }
-    } catch (error) {
-      ctx.logger?.warn?.(`result budget skipped for ${exec?.name}: ${error?.message ?? error}`)
-      return decision
+  async function fitNewResults(agent, signal) {
+    const session = agent.session
+    const state = stateOf(session)
+    const nodes = [...session.surface.nodes]
+
+    // First sight of this session: history that was already here stays as it is.
+    // Rewriting it would throw away the provider's prompt cache for no new output.
+    if (state.watermark === undefined) {
+      state.watermark = nodes.length > 0 ? Math.max(...nodes) : -1
+      return
     }
+
+    const arrived = []
+    for (let i = nodes.length - 1; i >= 0 && nodes[i] > state.watermark; i--) {
+      const event = session.eventAt(nodes[i])
+      // Only an appended result carries new output, not another producer's replacement.
+      if (event?.type === 'tool/result' && event.surfaceOp === 'append') arrived.unshift({ seq: nodes[i], event })
+    }
+    if (nodes.length > 0) state.watermark = Math.max(state.watermark, ...nodes)
+    if (arrived.length === 0) return
+
+    const budget = await budgetFor(agent, signal)
+    for (const { seq, event } of arrived) {
+      const callId = event.data?.message?.toolCallId
+      const toolName = state.names.get(callId)
+      state.names.delete(callId)
+      if (toolName !== undefined && excluded(toolName)) continue
+      if (!session.surface.nodes.includes(seq)) continue
+      const original = session.deriveEventMessage(event)
+      const content = fitContent(original.content, budget, toolName ?? '', options.headShare)
+      if (content === undefined) continue
+      const replacement = replaceOnSurface(session, ctx.tokenMeter, seq, event, original, content)
+      state.watermark = Math.max(state.watermark, replacement)
+    }
+  }
+
+  // Result events do not carry the tool name, and read and bash are trimmed differently.
+  ctx.on('tools/post-execute', (exec, _result, next) => {
+    const session = exec.agent?.session
+    if (session !== undefined) stateOf(session).names.set(exec.callId, exec.name)
+    return next()
   })
+
+  ctx.on(
+    'agent/pre-step',
+    async ({ agent, signal }, next) => {
+      try {
+        if (signal?.aborted !== true) await fitNewResults(agent, signal)
+      } catch (error) {
+        // Failing to make a request smaller must never break the turn.
+        ctx.logger?.warn?.(`result budget skipped: ${error?.message ?? error}`)
+      }
+      return next()
+    },
+    { prepend: true },
+  )
 }
 
 /** Cordis plugin entry. */

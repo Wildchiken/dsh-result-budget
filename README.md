@@ -14,7 +14,7 @@ dsh caps tool output with fixed numbers: `read` 2000 lines / 50 KB, bash 16 000 
 
 ## How it works
 
-On every `tools/post-execute`:
+Before each step, for the results that arrived since the last one:
 
 ```
 budget = max(ratio × (contextWindow − reservedOutput), minTokens)   # capped by maxTokens if you set one
@@ -24,7 +24,8 @@ budget = max(ratio × (contextWindow − reservedOutput), minTokens)   # capped 
 - Text over budget keeps the **first 75 % and last 25 %** (errors usually sit at the end) with a one-line notice telling the model how to see the rest, such as `grep/head/tail` for shell tools.
 - `read` is different: it keeps **complete lines from the start** and names the exact `offset` to continue from. A hole in the middle of a paged file would be skipped silently, so no tail is kept. If not even one line fits, the notice points to `bash` instead of back to the same offset.
 - Token estimate matches the host's 4 chars/token, but CJK counts 1 char/token so Chinese/Japanese/Korean output is not underestimated.
-- Images and other non-text blocks pass through. Calls blocked by other listeners and structured-value replacements are left alone.
+- Images and other non-text blocks pass through. History from before the plugin first saw the session is left alone, so the provider's prompt cache survives.
+- **Only the model's view changes.** The session log keeps the tool's real output, so you can still see it. The write is the pair the host's own tool-result pruner uses: a `compaction/prune` shadow price, then a `tool/result` that replaces the node on the surface. It needs `dsh-token-meter`, which is in the base bundle.
 - Without a declared `contextWindow` (or if the lookup fails) `fallbackTokens` applies.
 
 With the defaults:
@@ -90,14 +91,19 @@ Invalid config (unknown key, ratio out of range, non-positive integer, `minToken
 ## Relation to built-in components
 
 - **tool-result-pruner** trims *historic* results only when compaction triggers; this plugin limits a result as it *enters* the conversation. Use both.
-- **spill-policy** uses a fixed token cap, stores the full result on disk, and skips `read`. This plugin scales with the window and covers every tool; stack spill-policy on top if you want a recoverable full copy.
+- **spill-policy** is in the base bundle with a fixed cap (12 500 tokens), saves the full result to a file the model can read, and skips `read`. It runs first, and this plugin keeps the end of the text, where spill's notice sits. Results between this budget and spill's cap get no file.
 - **Per-tool caps** (`readLimit`, `maxOutputChars`) can stay at their defaults; this plugin runs after them.
 
 ## Known limitations
 
 - Budgets use an estimate, not real tokenization; conservative for code and English, possibly off for rare scripts.
-- Omitted text is not stored. The model has to fetch it again with `read`/`grep`; stack spill-policy for a recoverable copy.
+- The model cannot read what was omitted unless spill-policy saved a file. It has to fetch it again, and for shell tools the notice suggests re-running with narrower output, which runs a command with side effects a second time.
+- A small model may ignore the notice. In a test with a local 4B model it skipped the suggested `offset` and used `grep` instead.
 - The defaults are rules of thumb, not the result of a systematic evaluation. Comparison data across models is welcome.
+
+## Related
+
+[dsh-tool-output-budget](https://github.com/argszero/dsh-tool-output-budget) came first and also bounds each result as it arrives and keeps the log intact. Its budget is a fixed character count. Choose it if you want one number for every model; choose this plugin if the budget should follow the model's window.
 
 ## Development
 
