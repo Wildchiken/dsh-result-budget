@@ -1,0 +1,11 @@
+# Mounted as a bundle, the budget applies to every agent in the profile.
+# To limit it to one agent preset, list the package inside that preset's
+# `plugins` instead and do not add it as a bundle.
+- insert:
+    - id: result-budget
+      name: dsh-result-budget
+      config:
+        ratio: 0.15
+        minTokens: 384
+        maxTokens: 8000
+        fallbackTokens: 2000
