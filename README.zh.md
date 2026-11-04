@@ -39,7 +39,7 @@ dsh 自带的上限都是固定数字：`read` 一次 2000 行 / 50 KB，bash 16
 ## 安装
 
 ```bash
-dsh plugin --profile <name> add "github:<owner>/dsh-result-budget"
+dsh plugin --profile <name> add "github:Wildchiken/dsh-result-budget"
 ```
 
 作为 bundle 挂载时对 profile 里**所有 agent** 生效。

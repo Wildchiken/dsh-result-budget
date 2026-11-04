@@ -27,6 +27,14 @@
     "small-model"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Wildchiken/dsh-result-budget.git"
+  },
+  "homepage": "https://github.com/Wildchiken/dsh-result-budget#readme",
+  "bugs": {
+    "url": "https://github.com/Wildchiken/dsh-result-budget/issues"
+  },
   "engines": {
     "node": ">=20"
   },

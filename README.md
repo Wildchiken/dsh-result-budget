@@ -39,7 +39,7 @@ With the defaults:
 ## Install
 
 ```bash
-dsh plugin --profile <name> add "github:<owner>/dsh-result-budget"
+dsh plugin --profile <name> add "github:Wildchiken/dsh-result-budget"
 ```
 
 As a bundle it applies to **every agent** in the profile.
