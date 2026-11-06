@@ -38,6 +38,24 @@ With the defaults:
 | 128k (8k) | ≈ 18 400 tokens (tools' own caps usually apply first) |
 | unknown | 2000 tokens |
 
+## Does it help?
+
+Six tasks with large tool output, run with Spark X2.6 4B on LM Studio through the DeepSeek Harness headless runner, with the plugin off and on (v0.2.1). Tasks, setup and raw results are in [bench/](bench/).
+
+| Window | Plugin off | Plugin on | Runs that hit the context limit (off / on) |
+|---|---|---|---|
+| 8k | 7 / 12 | **12 / 12** | 4 / 0 |
+| 16k | 9 / 12 | **11 / 12** | 1 / 1, plus 2 timeouts off |
+| 32k | **11 / 12** | 4 / 6 | 1 / 0 |
+
+- **8k and 16k:** paired by task, 7 runs passed only with the plugin and none only without it (p ≈ 0.016). Runs were also faster on average (48 vs 69 s at 8k, 57 vs 108 s at 16k).
+- **32k:** it can hurt. Both failures were results that would have fit, trimmed anyway: a `read` cut before the line the model needed, and a `grep` with the key line in the removed middle. The 32k sample is small (6 runs with the plugin). For windows of 32k and up, raise `ratio` or leave the plugin off.
+- One model only, and tasks chosen for large output, so this shows where it helps, not how often.
+
+Trimming by the room left in the context instead of a fixed share was also tested. It did better at 32k (12 / 12) and worse at 8k and 16k, so it was not released.
+
+**On small windows the host limits output too.** pi-ai, the model client in DeepSeek Harness, sets `max output = window − estimated input − 4096`, at least 1. On an 8k window a context past about 4k tokens leaves the model one token, and the turn ends with `max-tokens`. That is behind most of the plugin-off failures above.
+
 ## Install
 
 ```bash
@@ -99,7 +117,7 @@ Invalid config (unknown key, ratio out of range, non-positive integer, `minToken
 - Budgets use an estimate, not the model's tokenizer. It was fitted on three local models and may differ on others. It runs high on numbers and hashes for models that group digits, so those results get trimmed sooner than necessary.
 - The model cannot read what was omitted unless spill-policy saved a file. It has to fetch it again, and for shell tools the notice suggests re-running with narrower output, which runs a command with side effects a second time.
 - A small model may ignore the notice. In a test with a local 4B model it skipped the suggested `offset` and used `grep` instead.
-- The defaults are rules of thumb, not the result of a systematic evaluation. Comparison data across models is welcome.
+- The defaults were tested on one local model only (see [Does it help?](#does-it-help)). On windows of 32k and up they can trim results that would have fit. Comparison data from other models is welcome.
 
 ## Related
 

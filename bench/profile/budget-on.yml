@@ -1,0 +1,7 @@
+- insert:
+    - id: result-budget
+      name: dsh-result-budget
+      config:
+        ratio: 0.15
+        minTokens: 384
+        fallbackTokens: 2000

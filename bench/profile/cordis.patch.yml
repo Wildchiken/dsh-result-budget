@@ -1,0 +1,61 @@
+# 尽量贴近 Lite：只留 read / write / edit / bash，短提示词，同样的 pruner 阈值。
+- id: tool-plugin-manager
+  disabled: true
+- id: tool-working-directory
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: mcp-resources
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: tool-fs
+  config:
+    applyPatch: false
+    readImage: false
+- id: tool-result-pruner
+  config:
+    thresholdChars: 4096
+    headChars: 2800
+    tailChars: 800
+- id: system-prompt
+  config:
+    personaPrefix: You are a coding agent. Say what you will do in one line, then call a tool. Keep every message short.
+- id: llm-pi-ai
+  config:
+    providers:
+      lmstudio:
+        displayName: LM Studio
+        apiKeyEnv: LMSTUDIO_API_KEY
+        api: openai-completions
+        baseURL: http://localhost:1234/v1
+        models:
+          - id: spark-x2.6-4b-abliterated
+            name: spark-x2.6-4b-abliterated
+            contextWindow: !!js Number(process.env.BENCH_WINDOW ?? 32768)
+            maxTokens: !!js Number(process.env.BENCH_MAXTOKENS ?? 4096)
+            reasoningEfforts:
+              off: none
+              high: high
+- id: agent-default-model
+  config:
+    provider: lmstudio
+    model: spark-x2.6-4b-abliterated
